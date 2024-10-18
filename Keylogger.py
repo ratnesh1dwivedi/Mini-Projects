@@ -1,3 +1,4 @@
+# At present this tool work on same device not connected to victim machine.
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from pynput import keyboard
