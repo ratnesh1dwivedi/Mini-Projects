@@ -137,17 +137,17 @@ if [ ! -f "$SAM_PATH" ]; then
 fi
 
 # 1) make a safe timestamped backup (readable by the invoker)
-TS=$(date +"%Y%m%d_%H%M%S")
-BACKUP_DIR="$(dirname "$SAM_PATH")/backups"
-mkdir -p "$BACKUP_DIR"
+#TS=$(date +"%Y%m%d_%H%M%S")
+#BACKUP_DIR="$(dirname "$SAM_PATH")/backups"
+#mkdir -p "$BACKUP_DIR"
 
-if [ "$(id -u)" -ne 0 ]; then
-    printf "[*] Copying SAM to backup (requires sudo)...\n"
-    sudo cp -v -- "$SAM_PATH" "$BACKUP_DIR/SAM.bak.$TS"
-else
-    cp -v -- "$SAM_PATH" "$BACKUP_DIR/SAM.bak.$TS"
-fi
-printf "[+] Backed up SAM to %s/SAM.bak.%s\n" "$BACKUP_DIR" "$TS"
+#if [ "$(id -u)" -ne 0 ]; then
+#    printf "[*] Copying SAM to backup (requires sudo)...\n"
+#    sudo cp -v -- "$SAM_PATH" "$BACKUP_DIR/SAM.bak.$TS"
+#else
+#    cp -v -- "$SAM_PATH" "$BACKUP_DIR/SAM.bak.$TS"
+#fi
+#printf "[+] Backed up SAM to %s/SAM.bak.%s\n" "$BACKUP_DIR" "$TS"
 
 # 2) list user accounts using chntpw -l
 printf "[*] Extracting users from SAM (this may print a table)...\n"
