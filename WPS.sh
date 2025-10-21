@@ -160,7 +160,7 @@ fi
 
 # Heuristic parsing for usernames (table between pipes)
 users=$(printf "%s\n" "$raw_list" \
-    | awk -F'|' '/\|/ { gsub(/^[ \t]+|[ \t]+$/,"",$2); if(length($2)) print $2 }' \
+    | awk -F'|' '/\|/ {gsub(/^[ \t]+|[ \t]+$/,"",$NF); if(length($NF)) print $NF}' \
     || true)
 
 # Fallback parsing if table pattern is not present
