@@ -1,5 +1,5 @@
 #!/bin/bash
-# Safe Windows SAM helper with auto-detection and read-only mount attempts
+# Safe Windows SAM helper with auto-detection, read-only mount attempts, and read-write for modifications
 # Use only on machines you own or have explicit permission to work on.
 
 set -euo pipefail
@@ -9,6 +9,9 @@ IFS=$'\n\t'
 DEFAULT_MOUNT_POINT="/media/windows"
 SAM_REL_PATH="Windows/System32/config/SAM"
 SAM_PATH="$DEFAULT_MOUNT_POINT/$SAM_REL_PATH"
+
+# Host-based backup location (writable, not on the mounted partition)
+HOST_BACKUP_DIR="/tmp/safe_sam_backups"
 
 err() { printf '%s\n' "$*" >&2; }
 
@@ -136,21 +139,21 @@ if [ ! -f "$SAM_PATH" ]; then
     exit 6
 fi
 
-# 1) make a safe timestamped backup (readable by the invoker)
-#TS=$(date +"%Y%m%d_%H%M%S")
-#BACKUP_DIR="$(dirname "$SAM_PATH")/backups"
-#mkdir -p "$BACKUP_DIR"
+# 1) Make a safe timestamped backup on the host system (not on the read-only mount)
+TS=$(date +"%Y%m%d_%H%M%S")
+sudo mkdir -p "$HOST_BACKUP_DIR"  # Ensure host backup dir exists
+sudo chown "$(id -u):$(id -g)" "$HOST_BACKUP_DIR" || true
 
-#if [ "$(id -u)" -ne 0 ]; then
-#    printf "[*] Copying SAM to backup (requires sudo)...\n"
-#    sudo cp -v -- "$SAM_PATH" "$BACKUP_DIR/SAM.bak.$TS"
-#else
-#    cp -v -- "$SAM_PATH" "$BACKUP_DIR/SAM.bak.$TS"
-#fi
-#printf "[+] Backed up SAM to %s/SAM.bak.%s\n" "$BACKUP_DIR" "$TS"
+printf "[*] Copying SAM to host-based backup (readable by you)...\n"
+if [ "$(id -u)" -ne 0 ]; then
+    sudo cp -v -- "$SAM_PATH" "$HOST_BACKUP_DIR/SAM.bak.$TS"
+else
+    cp -v -- "$SAM_PATH" "$HOST_BACKUP_DIR/SAM.bak.$TS"
+fi
+printf "[+] Backed up SAM to %s/SAM.bak.%s\n" "$HOST_BACKUP_DIR" "$TS"
 
-# 2) list user accounts using chntpw -l
-printf "[*] Extracting users from SAM (this may print a table)...\n"
+# 2) List user accounts using chntpw -l, including RID for identification
+printf "[*] Extracting users and RIDs from SAM (this may print a table)...\n"
 raw_list=$(chntpw -l "$SAM_PATH" 2>/dev/null || true)
 
 if [ -z "$raw_list" ]; then
@@ -158,14 +161,20 @@ if [ -z "$raw_list" ]; then
     exit 7
 fi
 
-# Heuristic parsing for usernames (table between pipes)
+# Parse for RID and Username (table between pipes, e.g., | 500 | Administrator |)
 users=$(printf "%s\n" "$raw_list" \
-    | awk -F'|' '/\|/ {gsub(/^[ \t]+|[ \t]+$/,"",$NF); if(length($NF)) print $NF}' \
+    | awk -F'|' '/\|/ { 
+        rid = $1; 
+        user = $2; 
+        gsub(/^[ \t]+|[ \t]+$/,"", rid); 
+        gsub(/^[ \t]+|[ \t]+$/,"", user); 
+        if(length(rid) && length(user)) print rid "|" user 
+    }' \
     || true)
 
 # Fallback parsing if table pattern is not present
 if [ -z "$users" ]; then
-    users=$(printf "%s\n" "$raw_list" | sed -n 's/^[ \t]*Username[ \t:]*//Ip; s/^[ \t]*User[ \t:]*//Ip' || true)
+    users=$(printf "%s\n" "$raw_list" | sed -n 's/^[ \t]*RID[ \t:]*\$[0-9]*\$.*Username[ \t:]*\$[^ ]*\$.*/\1|\2/p' || true)
 fi
 
 if [ -z "$users" ]; then
@@ -174,14 +183,14 @@ if [ -z "$users" ]; then
     exit 8
 fi
 
-# Show numbered menu
+# Show numbered menu with RID and Username
 declare -A usermap
 i=1
-printf "Select a user account to operate on (interactive chntpw will run):\n"
-while IFS= read -r u; do
-    [ -z "${u//[[:space:]]/}" ] && continue
-    printf " %d) %s\n" "$i" "$u"
-    usermap[$i]="$u"
+printf "Select a user account to operate on (RID and Username shown; interactive chntpw will run):\n"
+while IFS='|' read -r rid username; do
+    [ -z "${rid//[[:space:]]/}" ] || [ -z "${username//[[:space:]]/}" ] && continue
+    printf " %d) %s) %s\n" "$i" "$rid" "$username"
+    usermap[$i]="$rid|$username"
     ((i++))
 done <<< "$users"
 
@@ -191,23 +200,37 @@ if ! printf "%s\n" "$choice" | grep -Eq '^[0-9]+$' || [ -z "${usermap[$choice]:-
     err "[-] Invalid selection."
     exit 9
 fi
-username="${usermap[$choice]}"
-printf "[*] You selected: %s\n" "$username"
+IFS='|' read -r rid username <<< "${usermap[$choice]}"
+printf "[*] You selected: RID %s, Username %s\n" "$rid" "$username"
 
 # Final confirmation
-read -rp "Are you sure you want to launch chntpw interactively for '$username'? Type YES to continue: " ok
+read -rp "Are you sure you want to launch chntpw interactively for '$username' (RID $rid)? This will remount read-write. Type YES to continue: " ok
 if [ "$ok" != "YES" ]; then
     printf "Aborted by user.\n"
     exit 0
 fi
 
+# Remount read-write for chntpw modifications
+mount_point=$(dirname "$SAM_PATH")
+mount_point=$(dirname "$mount_point")  # Go up to the mount root
+printf "[*] Remounting %s read-write for chntpw modifications...\n" "$mount_point"
+if ! sudo mount -o remount,rw "$mount_point"; then
+    err "[-] Failed to remount read-write. Cannot proceed with modifications."
+    exit 10
+fi
+
 # Run chntpw interactively (use sudo if not root)
-printf "[*] Running: chntpw -u '%s' '%s'\n" "$username" "$SAM_PATH"
+printf "[*] Running: chntpw -u '%s' '%s' (enter commands like '1' to clear password, 'q' to quit, 'y' to confirm)\n" "$username" "$SAM_PATH"
 if [ "$(id -u)" -ne 0 ]; then
     sudo chntpw -u "$username" "$SAM_PATH"
 else
     chntpw -u "$username" "$SAM_PATH"
 fi
 
+# Remount back to read-only for safety
+printf "[*] Remounting %s back to read-only...\n" "$mount_point"
+sudo mount -o remount,ro "$mount_point" || err "[!] Warning: Failed to remount read-only. Unmount manually if needed."
+
 printf "[*] chntpw finished. Review the output above.\n"
-printf "[*] If you made changes, remember to unmount safely and reboot the target machine when appropriate.\n"
+printf "[*] If you made changes (e.g., cleared passwords), remember to unmount safely and reboot the target machine.\n"
+printf "[*] Backup is at: %s/SAM.bak.%s\n" "$HOST_BACKUP_DIR" "$TS"
