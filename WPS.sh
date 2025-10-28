@@ -5,6 +5,13 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Check if running interactively (stdin is a TTY)
+if [ ! -t 0 ]; then
+    err "[-] This script requires an interactive terminal to run safely (for user prompts and confirmations)."
+    err "    Run it directly in a shell, e.g., 'bash script.sh', not via pipes, redirection, or automation."
+    exit 1
+fi
+
 # Default expected SAM path (this will be checked/updated)
 DEFAULT_MOUNT_POINT="/media/windows"
 SAM_REL_PATH="Windows/System32/config/SAM"
