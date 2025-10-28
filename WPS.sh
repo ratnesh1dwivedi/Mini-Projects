@@ -5,12 +5,17 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# Check if running interactively (stdin is a TTY)
+# Enhanced check for interactive session (stdin is a TTY)
 if [ ! -t 0 ]; then
     err "[-] This script requires an interactive terminal to run safely (for user prompts and confirmations)."
     err "    Run it directly in a shell, e.g., 'bash script.sh', not via pipes, redirection, or automation."
+    err "    If using sudo, try 'sudo -i bash script.sh' to allocate a TTY."
     exit 1
 fi
+
+# Temporary debug: Confirm TTY status (remove after testing)
+echo "[DEBUG] TTY status: $(tty)"
+echo "[DEBUG] Is interactive? $([ -t 0 ] && echo 'Yes' || echo 'No')"
 
 # Default expected SAM path (this will be checked/updated)
 DEFAULT_MOUNT_POINT="/media/windows"
@@ -201,8 +206,23 @@ while IFS='|' read -r rid username; do
     ((i++))
 done <<< "$users"
 
-# Read selection
-read -rp "Enter the number of the account: " choice || { err "Aborted."; exit 130; }
+# Read selection with retry logic (up to 3 attempts)
+attempts=0
+max_attempts=3
+while [ $attempts -lt $max_attempts ]; do
+    read -rp "Enter the number of the account: " choice
+    if [ $? -eq 0 ] && [ -n "$choice" ]; then
+        break
+    else
+        ((attempts++))
+        err "[!] Input failed (attempt $attempts/$max_attempts). Ensure you're in an interactive terminal and try again."
+        if [ $attempts -ge $max_attempts ]; then
+            err "[-] Too many failed attempts. Aborting."
+            exit 130
+        fi
+    fi
+done
+
 if ! printf "%s\n" "$choice" | grep -Eq '^[0-9]+$' || [ -z "${usermap[$choice]:-}" ]; then
     err "[-] Invalid selection."
     exit 9
@@ -210,8 +230,22 @@ fi
 IFS='|' read -r rid username <<< "${usermap[$choice]}"
 printf "[*] You selected: RID %s, Username %s\n" "$rid" "$username"
 
-# Final confirmation
-read -rp "Are you sure you want to launch chntpw interactively for '$username' (RID $rid)? This will remount read-write. Type YES to continue: " ok
+# Final confirmation with retry logic
+attempts=0
+while [ $attempts -lt $max_attempts ]; do
+    read -rp "Are you sure you want to launch chntpw interactively for '$username' (RID $rid)? This will remount read-write. Type YES to continue: " ok
+    if [ $? -eq 0 ] && [ -n "$ok" ]; then
+        break
+    else
+        ((attempts++))
+        err "[!] Input failed (attempt $attempts/$max_attempts). Ensure you're in an interactive terminal and try again."
+        if [ $attempts -ge $max_attempts ]; then
+            err "[-] Too many failed attempts. Aborting."
+            exit 130
+        fi
+    fi
+done
+
 if [ "$ok" != "YES" ]; then
     printf "Aborted by user.\n"
     exit 0
@@ -220,14 +254,14 @@ fi
 # Remount read-write for chntpw modifications
 mount_point=$(dirname "$SAM_PATH")
 mount_point=$(dirname "$mount_point")  # Go up to the mount root
-printf "[*] Remounting %s read-write for chntpw modifications...\n" "$mount_point"
+printf "[*] Remounting %s read-write for chntpw modifications...\\n" "$mount_point"
 if ! sudo mount -o remount,rw "$mount_point"; then
     err "[-] Failed to remount read-write. Cannot proceed with modifications."
     exit 10
 fi
 
 # Run chntpw interactively (use sudo if not root)
-printf "[*] Running: chntpw -u '%s' '%s' (enter commands like '1' to clear password, 'q' to quit, 'y' to confirm)\n" "$username" "$SAM_PATH"
+printf "[*] Running: chntpw -u '%s' '%s' (enter commands like '1' to clear password, 'q' to quit, 'y' to confirm)\\n" "$username" "$SAM_PATH"
 if [ "$(id -u)" -ne 0 ]; then
     sudo chntpw -u "$username" "$SAM_PATH"
 else
@@ -235,9 +269,9 @@ else
 fi
 
 # Remount back to read-only for safety
-printf "[*] Remounting %s back to read-only...\n" "$mount_point"
+printf "[*] Remounting %s back to read-only...\\n" "$mount_point"
 sudo mount -o remount,ro "$mount_point" || err "[!] Warning: Failed to remount read-only. Unmount manually if needed."
 
-printf "[*] chntpw finished. Review the output above.\n"
-printf "[*] If you made changes (e.g., cleared passwords), remember to unmount safely and reboot the target machine.\n"
-printf "[*] Backup is at: %s/SAM.bak.%s\n" "$HOST_BACKUP_DIR" "$TS"
+printf "[*] chntpw finished. Review the output above.\\n"
+printf "[*] If you made changes (e.g., cleared passwords), remember to unmount safely and reboot the target machine.\\n"
+printf "[*] Backup is at: %s/SAM.bak.%s\\n" "$HOST_BACKUP_DIR" "$TS"
